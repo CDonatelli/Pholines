@@ -1,40 +1,17 @@
-function sOut = getMidlines_skelClick(videoName, varargin)
+function sOut = getMidlines_Auto(videoName, varargin)
 
-%% declare midline variables for saving
 sOut = struct;
+
+FileNamePrefix = VideoReader(videoName);
+FrNum = FileNamePrefix.NumberOfFrames;
+format = FileNamePrefix.VideoFormat;
+height=FileNamePrefix.Height;
+width=FileNamePrefix.Width;
+
 Lines(1).Frame = [];
 Lines(1).MidLine = [];
 
-%% Read in video and get video paramaters
-bwVideo = VideoReader(videoName);
-    FrNum = bwVideo.NumberOfFrames; 
-    format = bwVideo.VideoFormat;
-    height=bwVideo.Height;
-    width=bwVideo.Width;
-
-%% ask a few questions about how you want to process the video
-answer = questdlg('Do you have a video data struct file?', ...
-    'Data Structure?', ...
-    'Yes','No','No');
-    switch answer
-        case 'Yes'
-            sOut = varargin{1};
-        case 'No'
-            prompt = {'Fish ID:', 'Trial ID:', 'Fish Length (mm):','Fish Weight (g):', 'Video Frame Rate:'};
-            dlgtitle = 'Fish Data: Leave defaults if unknown';
-            dims = [1 35];
-            definput = {'n/a','n/a','0','0','30'};
-            fishData = inputdlg(prompt,dlgtitle,dims,definput);
-                sOut.fishID = fishData{1};
-                sOut.trialID = fishData{2};
-                sOut.fishLength = str2num(fishData{3});
-                sOut.fishWeight = str2num(fishData{4});
-                sOut.binaryFrameRate = str2num(fishData{5});
-                sOut.format = bwVideo.VideoFormat;
-                sOut.croppedRes = [bwVideo.Height, bwVideo.Width];
-    end
-
-    answer = questdlg('Do you want to process all frames?', ...
+answer = questdlg('Do you want to process all frames?', ...
     'Digitized Points', ...
     'Yes','No','No');
     switch answer
@@ -52,54 +29,106 @@ answer = questdlg('Do you have a video data struct file?', ...
                 endFrame = str2num(answer{2});
                 skipRate = str2num(answer{3});
     end
-    
-% Number of points along the midline, change for more
-    npts = 21;
-    
-    sOut.startFrame = startFrame;
-    sOut.endFrame = endFrame;
-    sOut.skipRate = skipRate;
-    
-    RawImage = read(bwVideo,startFrame);
+    framesToProcess = startFrame:skipRate:endFrame;
+    RawImage = read(FileNamePrefix,startFrame);%get the first image to allow user to click the fish 
+    imshow(RawImage)    
 
-%% Go through frame by frame and get the midlines
-framesToProcess = startFrame:skipRate:endFrame;
-    progressbar
-    visual = figure();
-for Index = 1:length(framesToProcess)
- 
-%% Read in frames
-        RawImage = read(bwVideo,framesToProcess(Index));
-        BinaryImage = imbinarize(RawImage, 0.5);
-    
-%% Get the midline between the nose and tail 
-    if framesToProcess(Index) == startFrame
-        prevImage = [];
-    else
-        prevImage = read(bwVideo,framesToProcess(Index-1));
-        prevImage = imbinarize(RawImage, 0.5);
-    end 
-    
-    fishScale = min([height, width]);
+visual=figure();    
+for Index = 1:length(framesToProcess)   
+        RawImage = read(FileNamePrefix,framesToProcess(Index));
+        BinaryImage=im2bw(RawImage);
+        BinaryImage = bwareaopen(BinaryImage,round((height*width)/100)); %Get rid of small objects.
+        Skeleton = bwmorph(BinaryImage,'skel',Inf);
+    if Index > 1   
+            prevImage = read(FileNamePrefix,framesToProcess(Index-1));
+    end
+    LabelImage = bwlabeln(BinaryImage,4);       
+    [m,n] = size(BinaryImage);
+    figure(visual)
+    hold on
     imshow(BinaryImage);
-    NoseTail = ginput(2);
-    Nose = NoseTail(1,:); Tail = NoseTail(2,:);
-    [inner, fishMask] = findFish(BinaryImage,Nose);
+    ImageStats = regionprops(LabelImage,'all'); %get stats on the labelled imag
     
- %% Plot the nose and tail from DLT digitized points
-    Skeleton = bwmorph(fishMask,'skel',Inf);
-    Skeleton = bwmorph(Skeleton,'spur',7);
-    
-    [fishPixelsY, fishPixelsX] = find(fishMask);
-    [skeletonY, skeletonX] = find(Skeleton);
-    
-    [frame_rows, frame_cols] = size(fishMask);
+%     if digitizedPts == 0
+        %if this is the first frame then get teh nose, otherwise use teh front
+        %point from the last image as teh temporary nose.
+        if ~exist('X','var') 
+            [X, Y] = ginput(1);  %get the location of the fish
+            Nose = [X,Y];
+        else
+            lastNoseX = (X-(0.025*n)); lastNoseY = (Y-(0.025*m));
+            NoseRect = [lastNoseX, lastNoseY, 0.05*n, 0.05*m];
+%             drawrectangle(gca,'Position',rect,'FaceAlpha',0);
+            im2 = imcrop(prevImage,NoseRect);
+            c = normxcorr2(im2,BinaryImage);
+            [ypeak,xpeak] = find(c==max(c(:))); 
+            yoffSet = ypeak-(size(im2,1)/2);
+            xoffSet = xpeak-(size(im2,2)/2);
+            X = round(xoffSet); Y = round(yoffSet);
+            Nose = [X,Y];
+            if BinaryImage(Y,X) == 0
+                [fishPixelsY, fishPixelsX] = find(BinaryImage);
+                noseDists = pdist2([X,Y], [fishPixelsY, fishPixelsX]);
+                minNoseDist = max(noseDists(:));
+                [ , noseIndex] = find(noseDists == minNoseDist);
+                Nose = [round(fishPixelsX(noseIndex)), round(fishPixelsY(noseIndex))];
+            end
+            
+        end
+        figure(visual)
+        hold on
+        plot(X,Y,'or'); %show the dot the user clicked
+        
+        FishRegion = LabelImage(round(Y),round(X)); %get the region number of the fish
+        FishImage = BinaryImage;%.*(LabelImage==FishRegion);  %kill all the rest of the binary image
+
+        figure(visual)
+        hold on
+        plot(Nose(1),Nose(2),'og');
+
+        %Find the coordinates of the binarized fish
+        [fishPixelsY, fishPixelsX] = find(BinaryImage);
+        [skeletonY, skeletonX] = find(Skeleton);
+        skelEnd = bwmorph(Skeleton,'endpoints');
+        [endY, endX] = find(skelEnd);
+        skelBranch = bwmorph(Skeleton,'branchpoints');
+        [branchY, branchX] = find(skelBranch);
+
+        %Use the users clicked nose point to find the tail
+        branchDistances = pdist2(Nose, [branchY, branchX]);
+           endDistances = pdist2(Nose, [endY, endX]);
+        minBranchDistance = max(branchDistances(:));
+           minEndDistance = max(endDistances(:));
+        if minBranchDistance > minEndDistance
+            [ , tailIndex] = find(branchDistances == minBranchDistance);
+            Tail = [round(branchX(tailIndex)), round(branchY(tailIndex))];
+        else
+            [ , tailIndex] = find(endDistances == minEndDistance);
+            Tail = [round(endX(tailIndex)), round(endY(tailIndex))];           
+        end
+        figure(visual)
+        hold on
+        plot(Tail(1),Tail(2),'og');
+        
+    [frame_rows, frame_cols] = size(BinaryImage);
+    %[path,p_length,p_row,p_col] = shortPath(Skeleton,skeletonNose,skeletonTail,frame_rows,frame_cols);
+
     SkelBranches = bwmorph(Skeleton,'branchpoints');
     SkelEnds = bwmorph(Skeleton,'endpoints');
     branches_and_ends = imadd(SkelBranches,SkelEnds); %add the two together
+
+%%%%%%%%%%%%%%%%START KEEGAN PLAY%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    %Determine whether fish is a circle
     
- %% Fix Circle Fish
-    if inner~=0 %if the fish is a circle/donut shape
+    if Index == startFrame
+        prevImage = [];
+    end
+    
+    [inner, fishMask] = findFish(BinaryImage,Nose);
+    
+ % Fix Circle Fish
+   if inner~=0 %if the fish is a circle/donut shape
         tempfig=figure();
         [tstR,tstC]=find(Skeleton==1);
         clickImage = repmat(fishMask*255,[1,1,3]);
@@ -173,38 +202,17 @@ for Index = 1:length(framesToProcess)
             fprintf('\n Frame %i executed nearCircle \n',framesToProcess(Index)); %let user know this was the case
         end
     end
-    %%% END KEEGAN PLAY %%%%    
-    
-    %Join the nose and tail with a straight line to minimize the effect of
-    %sgolay later on.
-    addlines=figure('Visible','off');
-    addax = axes('Parent',addlines);
-    imshow(path); hold on;
-    tail_join = drawline(addax,'Position',[Tail;skeletonTail]); %use straight line to join  path to DLT tail point
-    nose_join = drawline(addax,'Position',[Nose;skeletonNose]); %use straight line to join  path to DLT head point
-    tail_join_mask = createMask(tail_join); %create mask of straight line
-    nose_join_mask = createMask(nose_join); %create mask of straight line
-    interim = imadd(path, tail_join_mask); %add line to the paths mask
-    interim = logical(interim); %ensure logical matrix
-    path = imadd(interim, nose_join_mask); %add line to the paths mask
-    path = logical(path); %ensure logical matrix
-    hold off
-    delete(addlines)
-    [p_row,p_col] = find(path(:,:)>0);
+%%%%%%%%%%%%%%%%END KEEGAN PLAY%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%    
 
-% Plot the path to let the user check if its OK
     p_col = [Nose(1); p_col; Tail(1)]; p_row = [Nose(2); p_row; Tail(2)];
     figure(visual)
-    imshow(fishMask)
     hold on
-    plot(Nose(1), Nose(2),'g*', Tail(1), Tail(2), 'g*');
-    plot(p_col, p_row, 'b.');
+    temppts=plot(p_col, p_row, 'b*');
 
-%% If there was a circle fish, let user check that generated path looks OK
     if inner~=0
         circlecheck = questdlg('Does the path look pretty good?', ...
             'Circle Check', ...
-            'Yes','No','Yes');     
+            'Yes','No','Yes');
         switch circlecheck
             case 'Yes'
                 %If the path is mostly OK, allow filling in tail if needed
@@ -212,7 +220,7 @@ for Index = 1:length(framesToProcess)
                 if strght_ln_dist > p_length/5 %if this distance is large relative to the length of the path
                     tempfig=figure();
                     clear p_row p_col
-                    [path] = clickJoin(path,fishMask,Nose,Tail); %allow manual input to join path to DLT tail point
+                    [path] = clickJoin(path,BinaryImage,Nose,Tail); %allow manual input to join path to DLT tail point
                     [p_row,p_col] = find(path(:,:)>0);
                     close(tempfig)
                 end
@@ -220,19 +228,18 @@ for Index = 1:length(framesToProcess)
                 %Allow user to click circle if can't auto do it.
                 tempfig=figure();
                 clear path p_row p_col
-                [path] = clickCircle(fishMask,Nose,Tail,frame_rows,frame_cols); %function to allow user to click points along the midline, which are joined by straight lines to form path
+                [path] = clickCircle(BinaryImage,Nose,Tail,frame_rows,frame_cols); %function to allow user to click points along the midline, which are joined by straight lines to form path
                 [p_row,p_col] = find(path(:,:)>0);
                 close(tempfig)
         end
     end
-
-%% Add midline data to data structure
+    
     p_col = [Nose(1); p_col; Tail(1)]; p_row = [Nose(2); p_row; Tail(2)];
     temppts.XData=p_col;
     temppts.YData=p_row;
 
     X = p_col(1,1); Y = p_row(1,1);
- 
+    
     Lines(Index).Frame=framesToProcess(Index);       %save data in the output structure
     Lines(Index).MidLine=[p_row,p_col];
     Lines(Index).path = path;
@@ -241,35 +248,21 @@ for Index = 1:length(framesToProcess)
     clear p_col p_row path
     
     [Lines(Index).OrderedPts] = orderPts(Lines(Index).MidLine,Lines(Index).MidLine(1,:));
-    
-    progressbar(Index/length(framesToProcess))
 end
-
-%Order the midline points from nost to tail
-% progressbar('Ordering Points. Please wait...')
-% for i=1:size(Lines,2)
-%     [Lines(i).OrderedPts] = orderPts(Lines(i).MidLine,Lines(i).MidLine(1,:));
-%     progressbar(i/size(Lines,2))
-% end
-
+    
 nfr = size(Lines,2);
 x = []; y = [];
+
 for i = 1:nfr
-    %xPts = smooth(Lines(i).MidLine(:,2), 13, 'sgolay'); 
-    %yPts = smooth(Lines(i).MidLine(:,1), 13, 'sgolay');
-    %xPts = smooth(Lines(i).OrderedPts(:,2), 13, 'sgolay');
-    %yPts = smooth(Lines(i).OrderedPts(:,1), 13, 'sgolay');
     xPts = sgolayfilt(Lines(i).OrderedPts(:,2), 2, 13);
     yPts = sgolayfilt(Lines(i).OrderedPts(:,1), 2, 13);
     randPts = rand(1,length(xPts))/1000; xPts = xPts+randPts';
     % Generate equation if the midline
-    [pts, deriv, funct] = interparc(npts, xPts, yPts, 'spline');
+    [pts, deriv, funct] = interparc(21, xPts, yPts, 'spline');
     % add those points to an array
     x = [x,pts(:,1)]; y = [y,pts(:,2)];
 end
 sOut.X = x; sOut.Y = y;
-% total = nfr/sOut.binaryFrameRate; 
-% sOut.t = linspace(0,total,nfr)';
 
 %% Plot the midline results and save the data
 close all   %close the image 
@@ -280,10 +273,223 @@ axis equal
 sOut.midLines = Lines;
 midlineStruct = sOut;
 save([videoName,'_midlines.mat'], 'midlineStruct','-v7.3');
- 
+        
 
-%% Functions
+% blur and crop the image then invert and binary it
+function [FrameOut, Skeleton] = ProcessImage(Frame, Level)
+    FrameOut = ~im2bw(Frame,Level);
+    L = imsegkmeans(single(FrameOut),3);
+    FrameOut = L == 2;
+    [m,n] = size(FrameOut);
+    FrameOut = bwareaopen(FrameOut, round(0.001*(m*n)));
 
+%remove weird edges from video frame
+    FrameOut(1:3,:) = []; FrameOut(end-2:end,:) = []; FrameOut(:,1:3) = []; FrameOut(:,end-2:end) = [];
+
+%Smooth broken bits of fish
+    mask = FrameOut;
+%     mask = bwareafilt(mask,1); %Keep 1 largest object
+    notMask = ~mask;
+    mask = mask | bwpropfilt(notMask,'Area',[-Inf, 5000 - eps(5000)]);
+    BW3 = bwmorph(mask,'skel',Inf);
+    
+    FrameOut = mask;
+    Skeleton = BW3;   
+    
+function rect = CropVideo(im)
+    disp('Select the portion of the frame the fish swims through');
+    choice = 0;
+    while choice == 0
+        imshow(im)
+        rect = getrect;
+        im2 = imcrop(im,rect);
+        imshow(im2)
+        choice = input('Does this look right? :');
+    end
+    
+function [Back, Obj] = GetLevels(im)
+    
+    % Read in original RGB image.
+    rgbImage = im;
+%     % Extract color channels.
+%     redChannel = rgbImage(:,:,1); % Red channel
+%     greenChannel = rgbImage(:,:,2); % Green channel
+%     blueChannel = rgbImage(:,:,3); % Blue channel
+%     % Create an all black channel.
+%     allBlack = zeros(size(rgbImage, 1), size(rgbImage, 2), 'uint8');
+%     % Create color versions of the individual color channels.
+%     just_red = cat(3, redChannel, allBlack, allBlack);
+%     just_green = cat(3, allBlack, greenChannel, allBlack);
+%     just_blue = cat(3, allBlack, allBlack, blueChannel);
+%     % Recombine the individual color channels to create the original RGB image again.
+%     recombinedRGBImage = cat(3, redChannel, greenChannel, blueChannel);
+%     % Display them all.
+%     subplot(3, 3, 2);
+%     imshow(rgbImage);
+%     fontSize = 20; title('Original RGB Image', 'FontSize', fontSize)
+%     subplot(3, 3, 4);
+%     imshow(just_red); title('Red Channel in Red', 'FontSize', fontSize)
+%     subplot(3, 3, 5);
+%     imshow(just_green); title('Green Channel in Green', 'FontSize', fontSize)
+%     subplot(3, 3, 6);
+%     imshow(just_blue); title('Blue Channel in Blue', 'FontSize', fontSize)
+%     subplot(3, 3, 8);
+%     imshow(recombinedRGBImage); title('Recombined to Form Original RGB Image Again', 'FontSize', fontSize)
+%     
+%     answer = questdlg('Which channel had the most contrast?', ...
+%         'Color Channels', ...
+%         'Red','Green','Blue','Blue');
+%     switch answer
+%         case 'Red'
+%             channel = 1;
+%         case 'Green'
+            channel = 2;
+%         case 'Blue'
+%             channel = 3;
+%     end
+
+    close all
+    
+    OBlu = []; BBlu = [];
+    imshow(im); hold on
+    disp('Get Fish Levels');
+    [Xo Yo] = getpts;
+    plot(Xo,Yo,'bo');
+    hold on
+    for i = 1:length(Xo)
+        O = impixel(im,Xo(i),Yo(i));
+        OBlu = [OBlu,O(channel)];
+    end
+    disp('Get background Levels');
+    [Xb Yb] = getpts;
+    plot(Xb,Yb,'ro');
+    hold on
+    for i = 1:length(Xb)
+        B = impixel(im,Xb(i),Yb(i));
+        BBlu = [BBlu,B(channel)];
+    end
+    
+    MaxObj = max(OBlu); MinObj = min(OBlu);
+    MaxBac = max(BBlu); MinBac = min(BBlu);
+    
+    % If the levels are overlapping, find the average
+    % For now assuming that the background and fish are pretty different
+    % so the only overlapping levels considered are as follows:
+    % MaxFish > MaxBackground > MinFish > MinBackground
+    % MaxBackground > MaxFish > MinBackground > MinFish
+    % Looking to create an order that looks like one of the following:
+    % MaxFish > MinFish > MaxBackground > MinBackground
+    % MaxBackground > MinBackground > MaxFish > MinFish
+    
+    if MaxObj >= MinBac 
+        if MaxBac >= MinObj 
+            Avg = round(mean([MaxBac MinObj]));
+            MinObj = Avg;
+            MaxBac = Avg-1;
+        end
+    end
+    if MaxBac >= MinObj 
+        if MaxObj >= MinBac   
+            Avg = round(mean([MaxObj MinBac]));
+            MaxObj = Avg;
+            MinBac = Avg+1;
+        end
+    end
+    
+    %Now I need to account for the fact that the user might not select the
+    %full range of points on the fish (I did this and it leads to incorrect
+    %D values which means incorrect wobble measurements. This is a cheat-y
+    %fix but it works with my videos. This part of the code is less
+    %adaptable for other users (especially if they are filming in a
+    %background that is not super different from the fish). 
+    %Assumes one of these two cases:
+    % MinBackground < MaxBackground < MinFish < MaxFish 
+    % MinFish < MaxFish < MinBackground < MaxBackground
+    
+    if MinObj > MaxBac
+        MinObj = MinObj - ((MinObj-MaxBac)/2);
+        MaxObj = MaxObj + ((MinObj-MaxBac)/2);
+    end
+    if MinBac > MaxObj
+        MaxObj = MaxObj + ((MinBac-MaxObj)/2);
+        MinObj = MinObj - ((MinBac-MaxObj)/2);
+    end
+    
+    hold off
+    Back = [MaxBac, MinBac]; Obj = [MaxObj, MinObj];
+    
+function [Back, Obj] = GetLevelsBW(im)   
+    % Read in original RGB image.
+    rgbImage = im;
+        
+    OBlu = []; BBlu = [];
+    imshow(im); hold on
+    disp('Get Fish Levels');
+    [Xo Yo] = getpts;
+    plot(Xo,Yo,'bo');
+    hold on
+    for i = 1:length(Xo)
+        O = impixel(im,Xo(i),Yo(i));
+        OBlu = [OBlu,O(1)];
+    end
+    disp('Get background Levels');
+    [Xb Yb] = getpts;
+    plot(Xb,Yb,'ro');
+    hold on
+    for i = 1:length(Xb)
+        B = impixel(im,Xb(i),Yb(i));
+        BBlu = [BBlu,B(1)];
+    end
+    
+    MaxObj = max(OBlu); MinObj = min(OBlu);
+    MaxBac = max(BBlu); MinBac = min(BBlu);
+    
+    % If the levels are overlapping, find the average
+    % For now assuming that the background and fish are pretty different
+    % so the only overlapping levels considered are as follows:
+    % MaxFish > MaxBackground > MinFish > MinBackground
+    % MaxBackground > MaxFish > MinBackground > MinFish
+    % Looking to create an order that looks like one of the following:
+    % MaxFish > MinFish > MaxBackground > MinBackground
+    % MaxBackground > MinBackground > MaxFish > MinFish
+    
+    if MaxObj >= MinBac 
+        if MaxBac >= MinObj 
+            Avg = round(mean([MaxBac MinObj]));
+            MinObj = Avg;
+            MaxBac = Avg-1;
+        end
+    end
+    if MaxBac >= MinObj 
+        if MaxObj >= MinBac   
+            Avg = round(mean([MaxObj MinBac]));
+            MaxObj = Avg;
+            MinBac = Avg+1;
+        end
+    end
+    
+    %Now I need to account for the fact that the user might not select the
+    %full range of points on the fish (I did this and it leads to incorrect
+    %D values which means incorrect wobble measurements. This is a cheat-y
+    %fix but it works with my videos. This part of the code is less
+    %adaptable for other users (especially if they are filming in a
+    %background that is not super different from the fish). 
+    %Assumes one of these two cases:
+    % MinBackground < MaxBackground < MinFish < MaxFish 
+    % MinFish < MaxFish < MinBackground < MaxBackground
+    
+    if MinObj > MaxBac
+        MinObj = MinObj - ((MinObj-MaxBac)/2);
+        MaxObj = MaxObj + ((MinObj-MaxBac)/2);
+    end
+    if MinBac > MaxObj
+        MaxObj = MaxObj + ((MinBac-MaxObj)/2);
+        MinObj = MinObj - ((MinBac-MaxObj)/2);
+    end
+    
+    hold off
+    Back = [MaxBac, MinBac]; Obj = [MaxObj, MinObj];
+        
 function [arclen,seglen] = arclength(px,py,varargin)
     % Author: John D'Errico
     % e-mail: woodchips@rochester.rr.com
@@ -516,6 +722,92 @@ function val = segkernel(t)
       val = val + polyval(polyarray(k,:),t).^2;
     end
     val = sqrt(val);
+    
+function struct = calculateKinematics(struct)
+    prompt = {'Enter fish length in mm (leave as 0 if unknown)'};
+    dlgtitle = 'Fish Length';
+    dims = [1 35];
+    definput = {'0'};
+    length = inputdlg(prompt,dlgtitle,dims,definput);
+    length = str2double(length);
+    
+    mids = struct.midLines;
+    nfr = size(mids,2);
+    % Calculate the scale of the video using the fish length
+    % as the scale bar
+        FishPixelLengths = [];
+        % Loop through a few frames of the vide and calculate the
+        % length of the midline at each frame
+        for i = 1:round(nfr/15):nfr
+            FishPixelLengths = [FishPixelLengths,...
+                arclength(mids(i).MidLine(:,1),mids(i).MidLine(:,2))];
+        end
+        % Use the known length of the fish and the median of the 
+        % midline measurements to calculate the scale of the video
+        fishPixels = median(FishPixelLengths);
+        
+        struct.fishLength = length;
+        VidScale = length/fishPixels;
+        struct.VidScale = VidScale;
+        
+    % points to generate data for
+    npts = 21;
+    % initiating new variables
+    x = []; y = []; tailPtCordsY = []; tailPtCordsX = [];
+    for i = 1:nfr
+        % Generate equation if the midline
+        [pts, deriv, funct] = interparc(npts,  mids(i).MidLine(:,1),  ... 
+                                        mids(i).MidLine(:,2), 'spline');
+        % add those points to an array
+        x = [x,pts(:,1)]; y = [y,pts(:,2)];
+        
+        % usee the above function to find the coordinates of the points
+        % of interest in the tail region (to be used later
+    end
+    struct.X = x; struct.Y = y;
+    % figure out time for each frame and make a vector of times
+    
+    prompt = {'Enter video frame rate.)'};
+    dlgtitle = 'Frame Rate';
+    dims = [1 35];
+    definput = {'0'};
+    fr = inputdlg(prompt,dlgtitle,dims,definput);
+    fr = str2double(fr);
+    
+
+    total = nfr/fr; 
+    struct.t = linspace(0,total,nfr)';
+    s = linspace(1,length,npts);
+    struct.s = s';
+
+%%%% 2D Wave Kinematics
+    tailY = smooth(struct.t, struct.Y(20,:));
+    
+    p = polyfit(struct.t, tailY,7);   % fit line for the tail wave
+    yT = polyval(p, struct.t);        % y values for that line
+    tailY = tailY - yT;               % subtract those y values from that
+                                      % line to get actual amplitude
+    
+    %%%%% Peak Finder
+        [k,p] = betterPeakFinder(tailY,struct.t);
+        peaks = [k,p];
+        k = peaks(:,1); p = peaks(:,2);
+        tailPeaks = [k,p];
+    %%%%%
+     
+    amps = tailPeaks(:,2);        
+    tailAmps = abs(amps*struct.VidScale);
+    wavenum = size(tailPeaks(:,2),1);
+
+    nose = [struct.midLines(1).MidLine(1,:);struct.midLines(end).MidLine(1,:)];
+    distance = pdist(nose, 'euclidean');
+    distance = distance.*struct.VidScale;                   % in mm
+    struct.swimmingSpeed = (distance/struct.t(end));        % in mm/s
+    struct.bendingFrequency = wavenum/2/struct.t(end);      % in hZ
+    struct.bendingPeriod = 1/struct.bendingFrequency;       % in seconds
+    struct.bendingStrideLength = distance/(wavenum/2);      % in mm
+    struct.bendingAmp = median(tailAmps);                   % in mm
+    struct.bendingAmps = tailAmps;
 
 function [paths,be_closest_tail,be_closest_head,p_length] = nearCircle(skeleton,tail,ends,frame_rows,frame_cols,be_closest_tail,be_closest_head,p_thresh)
 
@@ -550,16 +842,9 @@ function [paths,be_closest_tail,be_closest_head,p_length] = nearCircle(skeleton,
     
     %while the path is too short to be realistic
     while p_length < p_thresh
-        if any(isfinite(tdist))
+
         %find closest end point to tail
         [~,ind] = min(tdist);
-        else %you've gone through all the options...clearly the threshold was set too high, lower slightly and try again.
-            fprintf('\nthreshold recalculated: %9.2f\n',p_thresh)
-            for i = 1:length(e(:,1))
-                tdist(i,1) = sqrt((tail(1)-e(i,1))^2 + (tail(2)-e(i,2))^2);
-            end
-            p_thresh=p_thresh*0.9;
-        end
 
         %run shortPath using that end point
         [paths,p_length,~,~] = shortPath(skeleton,be_closest_head(:),e(ind,:),frame_rows,frame_cols);
@@ -774,67 +1059,6 @@ function [inner, fish_mask] = findFish(mask, Nose)
         inner = 0;
     end
     
-%  function [inner, fish_mask] = findFish(mask,frame,prev_fish,bound_min,bound_max,i,start_frame)   
-%    
-%     frame_rows = length(mask(:,1));
-%     frame_cols = length(mask(1,:));
-%     
-%     [B,L,N,A] = bwboundaries(mask, 8); %find all boundaries
-% 
-%         if i==start_frame %for the first frame
-%         ffFig = figure();
-%         for k = 1:N
-%             bound_n = length(B{k});
-%             if bound_n > bound_min && bound_n < bound_max %only look at boundaries in reasonable 'fish' size range
-%                 figure(ffFig)
-%                 imshow(frame, 'InitialMagnification', 60);
-%                 hold on;
-%                 boundary = B{k};
-%                 plot(boundary(:,2), boundary(:,1), 'r', 'LineWidth', 2);
-%                 title('press space bar if fish is highlighted, otherwise press any other key');
-%                 [~,~,but] = ginput(1);
-%                 hold off;
-%                 if but == 32 %once fish is selected
-%                     thisBoundary(:,:) = B{k};
-%                     if (find(A(:,k) > 0))>0 %check for circular fish, and in these cases, find inner boundary 
-%                         [thisBoundary,inner] = innerCircle(thisBoundary,B,k,A);
-%                     else
-%                         inner = 0;
-%                     end
-%                     %create mask containing only the fish
-%                     fish_mask(:,:) = poly2mask(thisBoundary(:,2),thisBoundary(:,1), frame_rows, frame_cols);
-%                     break;
-%                 end
-%            end 
-%         end
-%         close(ffFig)
-% %         fishPixels = ImageStats(k).PixelList
-%     else %after first frame, find boundary closest to previous by image subtraction
-%         for k = 1:N
-%             bound_n = length(B{k});
-%             if bound_n > bound_min && bound_n < bound_max
-%                 boundary = B{k};
-%                 bound_mask(:,:) = poly2mask(boundary(:,2), boundary(:,1), frame_rows, frame_cols);
-%                 differences(:,:) = imsubtract(prev_fish,bound_mask(:,:)); 
-%                 NumberOfOnes(k) = length(find(differences(:,:)>0));
-%                 if NumberOfOnes(k) == 0
-%                     NumberOfOnes(k) = Inf;
-%                 end
-%             else
-%                 NumberOfOnes(k) = Inf;
-%             end
-%         end
-%         [~,I] = min(NumberOfOnes(:));
-%         thisBoundary = B{I};
-%         if (find(A(:,I) > 0))>0
-%             [thisBoundary,inner] = innerCircle(thisBoundary,B,I,A); %check for circular fish, and in these cases, find inner boundary
-%         else
-%             inner = 0;
-%         end
-%         %create mask containing only the fish
-%         fish_mask(:,:) = poly2mask(thisBoundary(:,2), thisBoundary(:,1), frame_rows, frame_cols);
-%     end    
-    
 function [thisBoundary,inner] = innerCircle(thisBoundary,B,k,A)
     b_length = length(thisBoundary(:,1));
     %loop through the children of boundary k
@@ -927,8 +1151,6 @@ function [ordered_pts] = orderPts(path_coordinates,head)
     end
     
     %Get rid of pesky NaNs at end.
-    ordered_pts=rmmissing(ordered_pts);
- 
-    
+    ordered_pts=rmmissing(ordered_pts);    
     
     
