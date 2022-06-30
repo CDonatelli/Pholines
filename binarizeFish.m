@@ -77,7 +77,7 @@ function dataStruct = binarizeFish(binaryVideo, videoData)
         end
     end
     
-    bwVideo = VideoWriter([dataStruct.videoPath,binaryVideo],'Grayscale AVI');
+    bwVideo = VideoWriter([dataStruct.videoPath,binaryVideo(1:end-3),'_BW'],'Grayscale AVI');
     open(bwVideo)
     
     for i = startFrame:skipRate:endFrame        
